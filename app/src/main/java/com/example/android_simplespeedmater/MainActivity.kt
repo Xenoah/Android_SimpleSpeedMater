@@ -66,7 +66,11 @@ data class SpeedometerSettings(
     val unitColor: Color = Color.Gray,
     val sizeScale: Float = 1.0f,
     val yOffset: Float = 0f,
-    val spacing: Float = 0f
+    val spacing: Float = 0f,
+    val xOffsetUnit: Float = 0f,
+    val updateInterval: Long = 500L,
+    val showDecimal: Boolean = false,
+    val decimalSizePercent: Float = 70f
 )
 
 class SettingsManager(context: Context) {
@@ -80,6 +84,10 @@ class SettingsManager(context: Context) {
             putFloat("size_scale", settings.sizeScale)
             putFloat("y_offset", settings.yOffset)
             putFloat("spacing", settings.spacing)
+            putFloat("x_offset_unit", settings.xOffsetUnit)
+            putLong("update_interval", settings.updateInterval)
+            putBoolean("show_decimal", settings.showDecimal)
+            putFloat("decimal_size_percent", settings.decimalSizePercent)
             apply()
         }
     }
@@ -91,7 +99,11 @@ class SettingsManager(context: Context) {
             unitColor = Color(prefs.getInt("unit_color", Color.Gray.toArgb())),
             sizeScale = prefs.getFloat("size_scale", 1.0f),
             yOffset = prefs.getFloat("y_offset", 0f),
-            spacing = prefs.getFloat("spacing", 0f)
+            spacing = prefs.getFloat("spacing", 0f),
+            xOffsetUnit = prefs.getFloat("x_offset_unit", 0f),
+            updateInterval = prefs.getLong("update_interval", 500L),
+            showDecimal = prefs.getBoolean("show_decimal", false),
+            decimalSizePercent = prefs.getFloat("decimal_size_percent", 70f)
         )
     }
 }
@@ -167,7 +179,7 @@ fun SpeedometerScreen(
             }
         }
     } else {
-        DisposableEffect(Unit) {
+        DisposableEffect(settings.updateInterval) {
             val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             
             val locationListener = object : LocationListener {
@@ -176,7 +188,6 @@ fun SpeedometerScreen(
                         speed = if (location.hasSpeed()) location.speed * 3.6f else 0f
                         satelliteInfo = satelliteInfo.copy(hasFix = true)
                     } else {
-                        // Network provider fix
                         satelliteInfo = satelliteInfo.copy(hasFix = true)
                     }
                     satelliteInfo = satelliteInfo.copy(isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
@@ -209,21 +220,19 @@ fun SpeedometerScreen(
             }
 
             try {
-                // Initialize with last known location for faster start
                 val lastGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 val lastNet = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
                 val bestLast = if (lastGps != null && (lastNet == null || lastGps.time > lastNet.time)) lastGps else lastNet
                 
                 bestLast?.let {
-                    if (System.currentTimeMillis() - it.time < 60000) { // If less than 1 minute old
+                    if (System.currentTimeMillis() - it.time < 60000) {
                         speed = if (it.hasSpeed()) it.speed * 3.6f else 0f
                         satelliteInfo = satelliteInfo.copy(hasFix = true)
                     }
                 }
 
-                // Request from both providers to speed up A-GPS and initial lock
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, locationListener)
-                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, locationListener)
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, settings.updateInterval, 0f, locationListener)
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, settings.updateInterval * 2, 0f, locationListener)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     locationManager.registerGnssStatusCallback(context.mainExecutor, gnssStatusCallback)
@@ -241,7 +250,6 @@ fun SpeedometerScreen(
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
-            // Main Speedometer UI
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -250,16 +258,31 @@ fun SpeedometerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    // Numeric text (Layer 1)
-                    Text(
-                        text = "%.0f".format(speed),
-                        fontSize = (160 * settings.sizeScale).sp,
-                        fontWeight = FontWeight.Black,
-                        color = settings.speedColor,
-                        modifier = Modifier.zIndex(1f)
-                    )
-                    // Unit text (Layer 2)
-                    // Adjusted the base offset to ensure it's visible by default
+                    Row(
+                        modifier = Modifier.zIndex(1f),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        val speedInt = speed.toInt()
+                        val speedDec = ((speed - speedInt) * 10).toInt()
+                        
+                        Text(
+                            text = speedInt.toString(),
+                            fontSize = (160 * settings.sizeScale).sp,
+                            fontWeight = FontWeight.Black,
+                            color = settings.speedColor
+                        )
+                        
+                        if (settings.showDecimal) {
+                            Text(
+                                text = ".%d".format(speedDec),
+                                fontSize = (160 * settings.sizeScale * (settings.decimalSizePercent / 100f)).sp,
+                                fontWeight = FontWeight.Black,
+                                color = settings.speedColor,
+                                modifier = Modifier.padding(bottom = (20 * settings.sizeScale).dp)
+                            )
+                        }
+                    }
+                    
                     Text(
                         text = "km/h",
                         fontSize = (32 * settings.sizeScale).sp,
@@ -267,12 +290,14 @@ fun SpeedometerScreen(
                         color = settings.unitColor,
                         modifier = Modifier
                             .zIndex(2f)
-                            .offset(y = (70 * settings.sizeScale + settings.spacing).dp)
+                            .offset(
+                                x = settings.xOffsetUnit.dp,
+                                y = (70 * settings.sizeScale + settings.spacing).dp
+                            )
                     )
                 }
             }
 
-            // Satellite Status Button (Top Left)
             val statusColor = when {
                 !satelliteInfo.isGpsEnabled -> Color.Gray
                 !satelliteInfo.hasFix -> Color.Red
@@ -294,7 +319,6 @@ fun SpeedometerScreen(
                 }
             }
 
-            // Settings Button (Top Right)
             IconButton(
                 onClick = { showSettings = true },
                 modifier = Modifier
@@ -391,11 +415,46 @@ fun SettingsContent(
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp), color = Color.DarkGray.copy(alpha = 0.5f))
 
-        Text("数値と単位の間隔: ${settings.spacing.toInt()}", color = Color.LightGray)
+        Text("更新頻度: ${"%.1f".format(settings.updateInterval / 1000f)} 秒", color = Color.LightGray)
+        Slider(
+            value = settings.updateInterval.toFloat(),
+            onValueChange = { onSettingsChange(settings.copy(updateInterval = it.toLong())) },
+            valueRange = 100f..3000f,
+            steps = 28
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = settings.showDecimal,
+                onCheckedChange = { onSettingsChange(settings.copy(showDecimal = it)) }
+            )
+            Text("小数点を表示する", color = Color.LightGray)
+        }
+        
+        if (settings.showDecimal) {
+            Text("小数点サイズ: ${settings.decimalSizePercent.toInt()}%", color = Color.LightGray)
+            Slider(
+                value = settings.decimalSizePercent,
+                onValueChange = { onSettingsChange(settings.copy(decimalSizePercent = it)) },
+                valueRange = 30f..100f
+            )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp), color = Color.DarkGray.copy(alpha = 0.5f))
+
+        Text("数値と単位の間隔 (上下): ${settings.spacing.toInt()}", color = Color.LightGray)
         Slider(
             value = settings.spacing, 
             onValueChange = { onSettingsChange(settings.copy(spacing = it)) }, 
             valueRange = -300f..200f
+        )
+
+        Text("数値と単位の位置 (左右): ${settings.xOffsetUnit.toInt()}", color = Color.LightGray)
+        Slider(
+            value = settings.xOffsetUnit, 
+            onValueChange = { onSettingsChange(settings.copy(xOffsetUnit = it)) }, 
+            valueRange = -300f..300f
         )
 
         Text("全体サイズ: ${"%.1f".format(settings.sizeScale)}", color = Color.LightGray)
